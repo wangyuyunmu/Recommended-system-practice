@@ -14,4 +14,5 @@ slashdot: http://snap.stanford.edu/data/soc-Slashdot0902.txt.gz
 epinions: http://snap.stanford.edu/data/soc-Epinions1.txt.gz
 
 lastfm-dataset-360K大概500M，其他均比较小
+
 slashdot，epinions是关于社交关系的，内容比较简单
