@@ -1,0 +1,259 @@
+# 导入包
+import random
+import math
+import time
+from tqdm import tqdm
+
+# 定义装饰器，监控运行时间
+def timmer(func):
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        res = func(*args, **kwargs)
+        stop_time = time.time()
+        print('Func %s, run time: %s' % (func.__name__, stop_time - start_time))
+        return res
+    return wrapper
+
+
+class Data():
+
+    def __init__(self, user, item, rate, test=False, predict=0.0):
+        self.user = user
+        self.item = item
+        self.rate = rate
+        self.test = test
+        self.predict = predict
+
+
+class Dataset():
+
+    def __init__(self, fp):
+        # fp: data file path
+        self.data = self.loadData(fp)
+
+    def loadData(self, fp):
+        data = []
+        for l in open(fp):
+            data.append(tuple(map(int, l.strip().split('::')[:3])))
+        data = [Data(*d) for d in data]
+        return data
+
+    def splitData(self, M, k, seed=1):
+        '''
+        :params: data, 加载的所有数据条目
+        :params: M, 划分的数目，最后需要取M折的平均
+        :params: k, 本次是第几次划分，k~[0, M)
+        :params: seed, random的种子数，对于不同的k应设置成一样的
+        :return: train, test
+        '''
+        random.seed(seed)
+        for i in range(len(self.data)):
+            # 这里与书中的不一致，本人认为取M-1较为合理，因randint是左右都覆盖的
+            if random.randint(0, M - 1) == k:
+                self.data[i].test = True
+
+def RMSE(records):
+    rmse = {'train_rmse': [], 'test_rmse': []}
+    for r in records:
+        if r.test:
+            rmse['test_rmse'].append((r.rate - r.predict) ** 2)
+        else:
+            rmse['train_rmse'].append((r.rate - r.predict) ** 2)
+    rmse = {'train_rmse': math.sqrt(sum(rmse['train_rmse']) / len(rmse['train_rmse'])),
+            'test_rmse': math.sqrt(sum(rmse['test_rmse']) / len(rmse['test_rmse']))}
+    return rmse
+
+
+# 1. Cluster
+class Cluster:
+    # 分组，所有用户分组为0
+    def __init__(self, records):
+        self.group = {}
+
+    def GetGroup(self, i):
+        return 0
+
+
+# 2. IdCluster
+class IdCluster(Cluster):
+    # 按照用户id分组
+    def __init__(self, records):
+        Cluster.__init__(self, records)
+
+    def GetGroup(self, i):
+        return i
+
+
+# 3. UserActivityCluster
+class UserActivityCluster(Cluster):
+    # 按照用户活跃度进行分组，用户id对应不同的group。
+    def __init__(self, records):
+        Cluster.__init__(self, records)
+        activity = {}
+        for r in records:
+            if r.test: continue
+            if r.user not in activity:
+                activity[r.user] = 0
+            activity[r.user] += 1
+        # 按照用户活跃度进行分组
+        k = 0
+        for user, n in sorted(activity.items(), key=lambda x: x[-1], reverse=False):
+            c = int((k * 5) / len(activity))
+            self.group[user] = c
+            k += 1
+
+    def GetGroup(self, uid):
+        if uid not in self.group:
+            return -1
+        else:
+            return self.group[uid]
+
+
+# 3. ItemPopularityCluster
+class ItemPopularityCluster(Cluster):
+    # 按照物品流行度进行分组，物品id对应不同的group。
+    def __init__(self, records):
+        Cluster.__init__(self, records)
+        popularity = {}
+        for r in records:
+            if r.test: continue
+            if r.item not in popularity:
+                popularity[r.item] = 0
+            popularity[r.item] += 1
+        # 按照物品流行度进行分组
+        k = 0
+        for item, n in sorted(popularity.items(), key=lambda x: x[-1], reverse=False):
+            c = int((k * 5) / len(popularity))
+            self.group[item] = c
+            k += 1
+
+    def GetGroup(self, iid):
+        if iid not in self.group:
+            return -1
+        else:
+            return self.group[iid]
+
+
+# 4. UserVoteCluster
+class UserVoteCluster(Cluster):
+    #对于每个用户，用户对物品评价的平均分进行排名。这里区别于用户活跃度。
+    def __init__(self, records):
+        Cluster.__init__(self, records)
+        vote, cnt = {}, {}
+        for r in records:
+            if r.test: continue
+            if r.user not in vote:
+                vote[r.user] = 0
+                cnt[r.user] = 0
+            vote[r.user] += r.rate
+            cnt[r.user] += 1
+        # 按照物品平均评分进行分组
+        for user, v in vote.items():
+            c = v / (cnt[user] * 1.0)
+            self.group[user] = int(c * 2)
+
+    def GetGroup(self, uid):
+        if uid not in self.group:
+            return -1
+        else:
+            return self.group[uid]
+
+
+# 5. ItemVoteCluster
+class ItemVoteCluster(Cluster):
+    # 对于每个item，用户对物品评价的平均分进行排名。这里区别于物品流行度。
+    def __init__(self, records):
+        Cluster.__init__(self, records)
+        vote, cnt = {}, {}
+        for r in records:
+            if r.test: continue
+            if r.item not in vote:
+                vote[r.item] = 0
+                cnt[r.item] = 0
+            vote[r.item] += r.rate
+            cnt[r.item] += 1
+        # 按照物品平均评分进行分组
+        for item, v in vote.items():
+            c = v / (cnt[item] * 1.0)
+            self.group[item] = int(c * 2)
+
+    def GetGroup(self, iid):
+        if iid not in self.group:
+            return -1
+        else:
+            return self.group[iid]
+
+# 返回预测接口函数
+def PredictAll(records, UserGroup, ItemGroup):
+    '''
+    :params: records, 数据集
+    :params: UserGroup, 用户分组类
+    :params: ItemGroup, 物品分组类
+    '''
+    # 对每个用户分组，不同的算法分组方式不同，计算每个组用户u对每个item打分的平均值，然后进行预测
+    userGroup = UserGroup(records)
+    itemGroup = ItemGroup(records)
+    group = {}
+    for r in records:
+        ug = userGroup.GetGroup(r.user)
+        ig = itemGroup.GetGroup(r.item)
+        if ug not in group:
+            group[ug] = {}
+        if ig not in group[ug]:
+            group[ug][ig] = []
+        group[ug][ig].append(r.rate)
+    for ug in group:
+        for ig in group[ug]:
+            group[ug][ig] = sum(group[ug][ig]) / (1.0 * len(group[ug][ig]) + 1.0)
+    # predict
+    for r in records:
+        ug = userGroup.GetGroup(r.user)
+        ig = itemGroup.GetGroup(r.item)
+        r.predict = group[ug][ig]
+
+
+class Experiment():
+
+    def __init__(self, M, UserGroup, ItemGroup, fp='../../../data/movies_data/ratings.dat'):
+        '''
+        :params: M, 划分数据集的比例
+        :params: UserGroup, ItemGroup, 聚类算法类型
+        :params: fp, 数据文件路径
+        '''
+        self.M = M
+        self.userGroup = UserGroup
+        self.itemGroup = ItemGroup
+        self.fp = fp
+
+    # 定义单次实验
+    def worker(self, records):
+        '''
+        :params: train, 训练数据集
+        :params: test, 测试数据集
+        :return: train和test的rmse值
+        '''
+        PredictAll(records, self.userGroup, self.itemGroup)
+        metric = RMSE(records)
+        return metric
+
+    # 多次实验取平均
+    def run(self):
+        dataset = Dataset(self.fp)
+        dataset.splitData(self.M, 0)
+        metric = self.worker(dataset.data)
+        print('Result (UserGroup={}, ItemGroup={}): {}'.format(
+            self.userGroup.__name__,
+            self.itemGroup.__name__, metric))
+
+UserGroups = [Cluster, IdCluster, Cluster, UserActivityCluster, UserActivityCluster, Cluster, IdCluster,
+              UserActivityCluster, UserVoteCluster, UserVoteCluster, Cluster, IdCluster, UserVoteCluster]
+ItemGroups = [Cluster, Cluster, IdCluster, Cluster, IdCluster, ItemPopularityCluster, ItemPopularityCluster,
+              ItemPopularityCluster, Cluster, IdCluster, ItemVoteCluster, ItemVoteCluster, ItemVoteCluster]
+M = 10
+# for i in range(len(UserGroups)):
+#     exp = Experiment(M, UserGroups[i], ItemGroups[i])
+#     exp.run()
+
+exp = Experiment(M, UserGroups[1], ItemGroups[1])
+exp.run()
+
