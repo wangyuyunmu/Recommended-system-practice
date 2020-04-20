@@ -2,6 +2,11 @@
 项亮等《推荐系统实践》练习
 
 
+
+
+
+
+
 其中所涉及到的数据集：
 
 MovieLens: http://www.grouplens.org/node/73
